@@ -1,0 +1,22 @@
+{
+  "name": "paymeshav",
+  "version": "1.0.0",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "keywords": [
+    "payme",
+    "paycom",
+    "donation",
+    "payment"
+  ],
+  "author": "",
+  "license": "MIT",
+  "description": "Payme (Paycom) one-time donation server example with Merchant API",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "pg": "^8.18.0"
+  }
+}
