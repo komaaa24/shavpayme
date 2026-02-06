@@ -21,18 +21,18 @@ const CHECKOUT_URL =
     ? 'https://checkout.paycom.uz'
     : 'https://test.paycom.uz';
 const TRANSACTION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours per Payme spec
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
+const USE_DB = Boolean(process.env.DATABASE_URL);
+const pool = USE_DB
+  ? new Pool({
+      connectionString: process.env.DATABASE_URL,
+    })
+  : null;
 
 if (!MERCHANT_ID || !SECRET_KEY) {
   console.error('PAYME_MERCHANT_ID and PAYME_SECRET_KEY are required');
   process.exit(1);
 }
-if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL is required (postgres connection string)');
-  process.exit(1);
-}
+// If DATABASE_URL missing, fall back to in-memory (useful for sandbox quick tests)
 
 /* --------------------------- App setup --------------------------- */
 const app = express();
@@ -40,6 +40,10 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 /* ----------------------- Utility helpers ------------------------- */
+// In-memory fallbacks
+const donationsMemory = new Map();
+const transactionsMemory = new Map();
+
 const now = () => Date.now();
 const toTiyin = (sumUz) => Math.round(Number(sumUz) * 100);
 const msg = (text) => ({ uz: text, ru: text, en: text });
@@ -65,6 +69,10 @@ function requirePaymeAuth(req) {
 
 /* --------------------------- DB schema --------------------------- */
 async function initDb() {
+  if (!USE_DB) {
+    console.warn('DATABASE_URL not set, using in-memory storage (NOT FOR PRODUCTION)');
+    return;
+  }
   await pool.query(`
     CREATE TABLE IF NOT EXISTS donations (
       id UUID PRIMARY KEY,
@@ -92,6 +100,10 @@ async function initDb() {
 
 /* --------------------------- DB helpers -------------------------- */
 async function createDonation(donationId, amount) {
+  if (!USE_DB) {
+    donationsMemory.set(donationId, { id: donationId, amount, state: 0, created_at: now() });
+    return donationsMemory.get(donationId);
+  }
   await pool.query(
     `INSERT INTO donations (id, amount, state) VALUES ($1,$2,0)
      ON CONFLICT (id) DO NOTHING`,
@@ -101,6 +113,7 @@ async function createDonation(donationId, amount) {
 }
 
 async function getDonation(donationId) {
+  if (!USE_DB) return donationsMemory.get(donationId);
   const { rows } = await pool.query(
     `SELECT id, amount, state, created_at FROM donations WHERE id = $1`,
     [donationId]
@@ -109,6 +122,10 @@ async function getDonation(donationId) {
 }
 
 async function saveTransaction(tx) {
+  if (!USE_DB) {
+    transactionsMemory.set(tx.paycomTxId, { ...tx });
+    return;
+  }
   await pool.query(
     `INSERT INTO transactions(paycom_id, donation_id, amount, state, create_time, perform_time, cancel_time, reason)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -131,6 +148,7 @@ async function saveTransaction(tx) {
 }
 
 async function getTransaction(paycomTxId) {
+  if (!USE_DB) return transactionsMemory.get(paycomTxId) || null;
   const { rows } = await pool.query(
     `SELECT paycom_id, donation_id, amount, state, create_time, perform_time, cancel_time, reason
      FROM transactions WHERE paycom_id = $1`,
@@ -151,10 +169,20 @@ async function getTransaction(paycomTxId) {
 }
 
 async function setDonationState(donationId, state) {
+  if (!USE_DB) {
+    const d = donationsMemory.get(donationId);
+    if (d) d.state = state;
+    return;
+  }
   await pool.query(`UPDATE donations SET state = $2 WHERE id = $1`, [donationId, state]);
 }
 
 async function listTransactions(from, to) {
+  if (!USE_DB) {
+    return Array.from(transactionsMemory.values()).filter(
+      (t) => t.create_time >= (from || 0) && t.create_time <= (to || now())
+    );
+  }
   const { rows } = await pool.query(
     `SELECT paycom_id, donation_id, amount, state, create_time, perform_time, cancel_time, reason
      FROM transactions
@@ -372,4 +400,3 @@ initDb()
     console.error('DB init failed', err);
     process.exit(1);
   });
-
